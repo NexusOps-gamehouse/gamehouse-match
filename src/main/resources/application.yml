@@ -1,0 +1,112 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  application:
+    name: gamehouse-match
+  config:
+    import:
+      - optional:classpath:application-secret.yml
+      - optional:file:./application-secret.yml
+      - optional:file:../application-secret.yml
+
+  # 서비스 간 이벤트 배달 (AMQP :5672). match도 APPLY 시 MatchFoundEvent를 발행한다
+  # (event/publisher/MatchFoundPublisher 참고) — post/chat/user와 같은 브로커·계정.
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_AMQP_PORT:5672}
+    username: ${RABBITMQ_USERNAME:appuser}
+    password: ${RABBITMQ_PASSWORD:apppass}
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/duo}
+    # 서비스 전용 DB 계정. 자기 스키마 밖은 권한이 없어서, 남의 테이블을 읽는
+    # 쿼리는 개발 단계에서 permission denied 로 즉시 실패한다.
+    #
+    # 키 이름에 서비스명을 넣은 이유: application-secret.yml 은 다섯 서비스가
+    # 공유한다. DB_USERNAME 같은 공통 키를 쓰면 한 값이 전부를 덮어써
+    # 계정 분리가 무의미해진다.
+    username: ${MATCH_DB_USERNAME:duo_match}
+    password: ${MATCH_DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        # 모든 쿼리에 스키마를 자동으로 붙인다.  match_requests → match_svc.match_requests
+        # DB 계정의 search_path 도 같은 값으로 잡아두었다(db/migration/local-bootstrap.sql).
+        # 둘 다 거는 이유: default_schema 는 Hibernate 가 만든 쿼리에만 적용되고,
+        # 네이티브 쿼리는 search_path 를 탄다.
+        default_schema: match_svc
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+app:
+  cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+
+# 서비스 간 호출 주소.
+# k8s 에서는 서비스 이름(http://user:8081)으로 들어오고, 로컬에서는 아래 기본값을 쓴다.
+# match는 user/post를 WebClient(config/WebClientConfig)로 호출한다 — 원 요청의
+# Authorization 헤더를 그대로 릴레이한다(client/UserClient, client/PostClient).
+services:
+  user:
+    base-url: ${USER_SERVICE_URL:http://localhost:8081}
+  post:
+    base-url: ${POST_SERVICE_URL:http://localhost:8082}
+  chat:
+    base-url: ${CHAT_SERVICE_URL:http://localhost:8083}
+  riot:
+    base-url: ${RIOT_SERVICE_URL:http://localhost:8084}
+  match:
+    base-url: ${MATCH_SERVICE_URL:http://localhost:8085}
+
+# ExplanationService(AI 기능)용. 키가 없으면(dummy_key) 규칙 기반 문구로 대체되므로
+# 로컬/데모 환경에서도 에러 없이 동작한다. Top1 결과에 한해서만 호출한다(비용 관리).
+llm:
+  api:
+    key: ${LLM_API_KEY:dummy_key}
+    url: ${LLM_API_URL:https://api.openai.com/v1/chat/completions}
+  model: ${LLM_MODEL:gpt-5o-mini}
+
+# ---------------------------------------------------------------------------
+# Observability (Actuator + Micrometer)
+#
+# 관리 포트를 앱 포트와 분리한다. Ingress 에 이 포트 규칙이 없으므로
+# 클러스터 안의 Prometheus 만 gamehouse-match:8185/actuator/prometheus 로 수집할 수 있다.
+#
+# exposure.include 는 화이트리스트다. /actuator/env, /actuator/heapdump 같은
+# 민감한 엔드포인트가 열리지 않도록 필요한 것만 나열한다.
+# ---------------------------------------------------------------------------
+management:
+  server:
+    port: 8185
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: gamehouse-match
+    distribution:
+      # p95 / p99 를 구하려면 _bucket 메트릭이 필요하다.
+      # Spring Boot 기본값은 _count / _sum / _max 만 내보내므로
+      # 이 설정이 없으면 histogram_quantile(...) 이 항상 빈 결과가 된다.
+      percentiles-histogram:
+        http.server.requests: true    # 우리가 받는 요청
+        http.client.requests: true    # 우리가 보내는 요청 (서비스 간 호출 포함)
+      slo:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s, 2s, 5s
+        http.client.requests: 100ms, 300ms, 500ms, 1s, 2s, 5s
+      minimum-expected-value:
+        http.server.requests: 10ms
+      maximum-expected-value:
+        http.server.requests: 10s
+  observations:
+    key-values:
+      env: ${ENV_NAME:local}

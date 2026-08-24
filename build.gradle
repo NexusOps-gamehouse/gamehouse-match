@@ -1,0 +1,13 @@
+apply plugin: 'org.springframework.boot'
+
+// match 는 user/post 처럼 자기 스키마(match_svc)를 소유한다 — JPA·DB 드라이버가 필요하다.
+// user/post 서비스를 호출할 때는 riot 과 같은 이유로 WebClient(webflux)를 쓴다: 응답을
+// JsonNode 로 받아 match 내부 DTO(UserSummaryDto/PostSummaryDto)로 방어적으로 매핑하는
+// 논블로킹 클라이언트가 필요해서다. web/security/validation/actuator/jjwt/amqp 는
+// common 이 api 의존성으로 이미 물려준다 — 여기서 다시 선언하지 않는다.
+dependencies {
+    implementation project(':common')
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    runtimeOnly 'org.postgresql:postgresql'
+}
