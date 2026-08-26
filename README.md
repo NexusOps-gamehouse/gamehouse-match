@@ -23,16 +23,67 @@ v1(`match-v1-rule-based`)과 가장 크게 다른 점 두 가지:
    주도성(15)·실수 관용도(10)·플레이 집중도(10)·친목 성향(10)·나이(10) = 100점 + 파티 내 편차
    보정(±α).
 
+## v3: 스케일 정정 + 안 쓰이던 데이터 연결 (algoVersion `match-v3-teamfit`)
+
+v2에서 **에러 없이 조용히 틀리고 있던** 것들을 고치고, 받아만 두고 안 쓰던 프로필 값을 점수에
+연결한 버전이다. 각 항목의 근거는 해당 파일 주석에 남겨 뒀다.
+
+**1) 점수 스케일이 실제 설문 값과 어긋나 있었다.**
+`PlayStyleAxis.score()`는 `(평균-1)/4*100`으로 **0~100**(중앙 50)을 만드는데,
+`TeamFitCalculator`는 "1~5점 × 20 = 20~100"(중앙 60)을 전제로 상수를 잡고 있었다.
+`NEUTRAL 60 → 50`, `MAX_AXIS_DIFF 80 → 100`. 후자는 분모가 실제보다 작아 모든 축을 과하게
+깎았고 차이 80 이상을 전부 0점으로 뭉갰다(85와 100이 동점이었다).
+
+**2) 파티 평균 대신 구성원별 점수의 평균으로 계산한다.**
+축마다 파티 평균을 먼저 구하면 승리 지향성 100인 방장과 0인 팀원이 서로를 상쇄해 50이 되고,
+50인 검색자가 만점을 받았다. 나이도 같은 문제였다(20살+40살 파티의 평균 30 → 27살이 만점).
+
+**3) 설문 미응답자를 평균에서 뺀다.**
+v2는 미응답자를 중립값으로 채워 평균에 섞었다 — 결측이 감점처럼 작동했다. 지금은 아는 사람끼리만
+비교하고, 대신 응답에 `surveyedCount`를 실어 화면이 "3명 중 2명 설문 완료"라고 말한다.
+
+**4) 주도성을 양방향으로 본다.**
+`PlayStyleAxis` 주석이 설계로 명시한 최적 조합(한쪽 INITIATIVE 높음 + 다른 쪽
+INITIATIVE_PREFERENCE 높음)이 v2에서는 절반만 계산돼 점수에 잡히지 않았다.
+
+**5) 배점 재구성 — 시간대·음성 축 신설.**
+승리 지향성(20)·소통 적극성(16)·주도성(12)·실수 관용도(8)·플레이 집중도(8)·친목 성향(8)·
+**플레이 시간대(15)**·**음성 채팅(5)**·나이(8) = 100점 + 파티 내 편차 보정(±α, 최대 5점).
+편차 보정은 6개 성향 축을 모두 본다(v2는 4개만 봤다).
+
+**6) 게임별 어휘를 post 쪽 `GameOptions`에 맞췄다.** — 아래 참고.
+
+### 어휘의 기준점은 post 의 `GameOptions` 다
+
+포지션/역할·티어 문자열은 결국 모집글에 **저장된 값**과 문자열로 비교된다. 저장을 검증하는 쪽이
+`GameOptions`이므로 거기가 기준이다. v2에서는 세 군데가 어긋나 있었고, 전부 에러가 아니라
+"결과 0건" 또는 "필터가 조용히 꺼짐"으로 나타났다.
+
+| 항목 | 모집글(GameOptions) | v2의 match/프론트 | 증상 |
+|---|---|---|---|
+| 발로란트 역할 | 타격대/척후대/전략가/감시자 | 듀얼리스트/이니시에이터/… | 역할을 고르면 **항상 0건** |
+| 발로란트 티어 | 초월 | 초월자 | 그 티어를 건 글이 티어 무관으로 통과 |
+| LOL 게임 모드 | 신속/랭크/칼바람 | 일반/랭크/칼바람 | '일반' 선택 시 후보 목록 자체가 빈 배열 |
+
+여기에 더해 `User.riotTier`는 라이엇 **영문 enum**(`"DIAMOND"`)인데 한글 서열표를 그대로
+뒤지고 있었다. 못 찾으면 `tierInRange`가 "내 티어를 모른다"며 통과시키므로, **라이엇을 연동한
+사용자일수록 티어 조건이 안 걸리는** 상태였다. `GameMatchingStrategy.normalizeTier()`가 세
+경로(설문 한글값 / 라이엇 영문 enum / GameOptions 값)를 모두 흡수한다.
+
+프로필의 `position`도 게임을 구분하지 않고 한 칸에 저장되므로, 검색 게임의 어휘에 속할 때만
+폴백한다(`knowsPosition`). 예전에는 발로란트 검색에서 역할을 비워두면 LOL의 "정글"로 필터가
+걸려 0건이 됐다 — 아무것도 안 고른 사용자가 가장 나쁜 결과를 받았다.
+
 ### 동작함
 
-- `POST /api/match/search` — game(필수) 외 gameMode/positions/micRequired/targetMembersOptions/limit
-  전부 선택.
+- `POST /api/match/search` — game(필수) 외 gameMode/positions/tier/micLevel/playStyle/
+  targetMembersOptions/playTime/limit 전부 선택.
   - `HardFilterService`: 본인 글·마감·정원초과·게임/모집상태 제외(항상 엄격), 포지션·티어 범위·
-    검색자가 고른 마이크 선호·희망 인원(항상 엄격), 마이크 "호환성"만 결과 3개 미만이면 완화
-    ("완화 사다리")
-  - `TeamFitCalculator`: 7축 Team Fit 점수 + 편차 보정. "파티"는 모집글 작성자 + 이미 참여 확정된
-    파티원(`PostSummaryDto.members`)이다 — post 서비스가 아직 파티원 배열을 안 내려주면 작성자
-    한 명으로 계산된다(아래 "알려진 한계" 참고).
+    검색자가 고른 마이크 선호·희망 인원·플레이 스타일(항상 엄격), 마이크 "호환성"만 결과 3개
+    미만이면 완화("완화 사다리")
+  - `TeamFitCalculator`: 9축 Team Fit 점수 + 편차 보정. "파티"는 모집글 작성자 + 이미 참여
+    확정(CONFIRMED)된 파티원(`PostSummaryDto.members`)이다 — 팀원이 둘이면 방장 포함 3명
+    전원이 계산에 들어간다.
   - `MatchRequest`/`MatchResult`로 검색·결과 스냅샷 저장. `MatchResult`에 축별 점수(`axesJson`)와
     1위 설명(`explanationJson`)도 같이 저장한다.
   - `ExplanationService`: 1위 결과에 대해 `{headline, reasons[], caution}` 구조의 AI 설명을 만든다.
@@ -41,15 +92,25 @@ v1(`match-v1-rule-based`)과 가장 크게 다른 점 두 가지:
   `MatchFoundPublisher`가 `common.event.MatchFoundEvent`를 RabbitMQ(`gamehouse.events`)로
   발행한다(아직 구독하는 서비스는 없다 — chat/crew가 붙을 계약만 먼저 나가 있는 상태).
 
+### 응답에 새로 실리는 값
+
+- `results[].party` — 방장 + 확정 파티원(`PartyBrief`: userId/nickname/age/host/surveyed).
+  파티원 조회는 원래도 하고 있었는데(성향을 가져오려면 id가 필요하다) 응답에 안 실어서 화면이
+  "OO님의 파티"라고만 말하고 누가 있는지는 못 보여줬다. 성향 점수는 계산 전용이라 넣지 않는다.
+- `results[].surveyedCount` — 그중 설문을 마친 인원. 미응답자를 감점 대신 이 숫자로 드러낸다.
+- `results[].axes[].known` — 실제로 비교해서 나온 점수인가, 데이터가 없어 중립값으로 채운
+  자리인가. 구분하지 않으면 아무도 안 채운 축이 중립값 50점으로 내려가면서 "60점 미만이면
+  주의 문구" 규칙에 걸려, 재본 적도 없는 항목을 두고 "차이가 있어요"라고 말하게 된다.
+  `ExplanationService`는 `known=false`인 축을 설명에서 빼고, 프론트는 흐리게 표시한다.
+  점수 자체는 총점에 그대로 들어간다 — 축마다 배점이 고정이라 빼면 후보 간 총점을 비교할 수 없다.
+
 ### 자리만 잡아둠 / 아직 못 채운 것
 
 - `domain/preference/UserPreference` — 개인화용, 아무 서비스도 아직 안 씀
-- **파티원 개별 데이터.** `PostSummaryDto.members`/`PartyMemberDto`는 스키마만 만들어 뒀다 —
-  post 서비스가 실제로 이 배열을 내려주기 시작하면 `TeamFitCalculator`는 코드 변경 없이 자동으로
-  다인원 평균 계산으로 바뀐다. 그 전까지는 작성자 1인을 파티 전체로 취급한다. 같은 이유로
-  `MatchFoundPublisher`가 발행하는 `MatchFoundEvent.memberIds`도 지금은 신청자 한 명뿐이다.
-- **파티원별 나이.** 위와 같은 이유로 나이 축도 현재는 작성자 나이만 반영한다.
-- Team Fit 세부 정규화 상수(`MAX_AXIS_DIFF`, 나이 감점 곡선, 편차 보정 계수)는 실사용 데이터가
+- `RecommendationEvent` — 쓰기만 하고 읽는 코드가 없다. 재랭킹/개인화 루프 미연결.
+- `MatchFoundPublisher`가 발행하는 `MatchFoundEvent.memberIds`는 아직 신청자 한 명뿐이다
+  (파티원 목록은 이제 알 수 있으므로 넓힐 수 있는 상태다).
+- Team Fit 세부 정규화 상수(나이 감점 곡선, 편차 보정 계수, 시간대 감점 폭)는 실사용 데이터가
   없는 상태에서 잡은 1차 값이다. STORY 03에서 실측 데이터로 보정이 필요하다.
 
 ## 왜 User/Post 엔티티를 그대로 안 쓰고 client로 호출하는가
@@ -61,9 +122,14 @@ match 쪽 DTO(`UserSummaryDto`, `PostSummaryDto`)로 옮겨 담는다. v2에서 
 (age/personality/tierMin/tierMax/micLevel/members)도 이 두 엔드포인트의 응답 확장으로 받는다는
 전제다 — 별도 신규 엔드포인트는 아직 안 만들었다.
 
+성향 점수(`/internal/users/personality`)와 확정 파티원(`/internal/posts/party`)만은 공개 API가
+아니라 **내부 전용 엔드포인트**로 받는다. 성향 점수는 "남의 프로필 조회"로 보여선 안 되는 값이고,
+"이 글에 누가 확정으로 들어와 있는가"도 원래 방장만 보던 정보라 공개 응답에 얹지 않았다.
+
 두 client 모두 **필드가 없어도 죽지 않도록** 방어적으로 파싱한다(`JsonParsingUtils`). user/post
-서비스가 아직 이 필드들을 안 내려줘도 null/빈 배열로 채워지고, `HardFilterService`는 "제한 없음"으로,
-`TeamFitCalculator`는 중립값(60점)으로 처리한다.
+서비스가 이 필드들을 안 내려줘도 null/빈 배열로 채워지고, `HardFilterService`는 "제한 없음"으로
+넘긴다. `TeamFitCalculator`는 모르는 값을 **평균에서 빼고**, 그 축을 아무도 모를 때만 중립값
+(50점 = 0~100 스케일의 중앙값)으로 떨어진다 — "모른다"를 감점으로 바꾸지 않기 위해서다.
 
 인증은 "토큰 릴레이" 방식이다. match는 자체 로그인이 없고, 로그인한 사용자의 Authorization
 헤더를 그대로 user/post 서비스에 다시 실어 보낸다. 서비스 간 전용 인증(mTLS, 내부 API 키)은

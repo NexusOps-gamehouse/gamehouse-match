@@ -68,7 +68,15 @@ llm:
   api:
     key: ${LLM_API_KEY:dummy_key}
     url: ${LLM_API_URL:https://api.openai.com/v1/chat/completions}
-  model: ${LLM_MODEL:gpt-5o-mini}
+  model: ${LLM_MODEL:gpt-4o-mini}
+
+  # 이 호출은 검색 1위 결과 하나에만 붙는 부가 기능이다. 넘기면 규칙 기반 문구로
+  # 대체되고 검색 자체는 정상 응답한다 — 사용자를 기다리게 두지 않는 게 우선이다.
+  timeout-ms: ${LLM_TIMEOUT_MS:8000}
+
+  # 음수면 요청에서 아예 뺀다. GPT-5 계열처럼 이 파라미터를 거부하는 모델을 쓸 때,
+  # 또는 모델 기본값을 그대로 쓰고 싶을 때 -1 로 둔다.
+  temperature: ${LLM_TEMPERATURE:0.4}
 
 # ---------------------------------------------------------------------------
 # Observability (Actuator + Micrometer)

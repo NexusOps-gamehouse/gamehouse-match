@@ -15,6 +15,8 @@ public record FitItem(
         double score,             // 0~100, Team Fit 종합 점수
         List<FitAxis> axes,       // 기여도(contribution) 내림차순 정렬됨
         int partySize,            // 작성자 포함, 계산에 쓰인 파티 인원 수
+        List<PartyBrief> party,   // 방장 + 확정 파티원. "누구와 하는 파티인가"를 화면에 보여주기 위한 값
+        int surveyedCount,        // party 중 성향 설문을 마친 인원 — 점수 신뢰도 표시용("3명 중 2명 설문 완료")
         boolean micRequired,
         String positions,
         String playTime,

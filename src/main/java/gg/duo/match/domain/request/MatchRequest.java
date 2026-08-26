@@ -43,7 +43,9 @@ public class MatchRequest {
 
     private String tier;               // 이 검색에서 오버라이드한 티어(없으면 프로필 값을 썼다는 뜻)
 
-    private String playStyle;          // 참고용 — 아직 필터/점수에는 반영하지 않는다
+    private String playStyle;          // 빡겜 | 즐겜 — Hard Filter다(HardFilterService.matchesPlayStyle)
+
+    private String playTime;           // 이 검색에서 오버라이드한 시간대(콤마 구분, 예: "저녁,새벽"). 비어 있으면 프로필 playTimes를 썼다는 뜻
 
     private String targetMembersOptions; // 콤마 구분 숫자, 예: "3,4,5"
 

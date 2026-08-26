@@ -16,9 +16,9 @@ public record MatchSearchRequest(
         Boolean micRequired,                 // (구버전 호환용) 선택. true=마이크 필수인 방만, false=마이크 필요 없는 방만, null=상관없음. micLevel이 있으면 그쪽을 우선한다
         String micLevel,                     // 선택. REQUIRED | PREFERRED | ANY. micRequired보다 우선 적용된다(HardFilterService.matchesMicPreference)
         String tier,                         // 선택. 이 검색에서 내 티어로 취급할 값(게임별 서열표 문자열, 예: "골드"). 없으면 프로필의 tier/riotTier를 그대로 쓴다
-        String playStyle,                    // 선택. 빡겜/즐겜 등 참고용 — post가 아직 "원하는 플레이 스타일"을 안 내려줘서 현재 필터/점수 계산에는 반영하지 않는다(playTime과 동일한 상태)
+        String playStyle,                    // 선택. 빡겜/즐겜 — post의 PostGameRequirement.playStyle(이 모집이 원하는 텐션)과 정확히 일치하는 글만 남기는 Hard Filter다(HardFilterService.matchesPlayStyle). null/빈값이면 상관없음 — 필터링하지 않는다.
         List<Integer> targetMembersOptions,  // 선택. 희망 파티원 수(본인 포함, 복수 선택 가능)
-        String playTime,                     // 선택. 참고용 텍스트 — 현재 필터/점수 계산에는 반영하지 않는다(기획 확정 대기)
+        String playTime,                     // 선택. 이번 검색에서 내 플레이 시간대로 취급할 값(콤마 구분, 프로필 playTimes와 같은 어휘: 아침/낮/저녁/새벽). 비우면 프로필 값을 쓴다. TeamFitCalculator의 "플레이 시간대" 축에 반영된다 — 예전엔 자유 텍스트("오늘 21시")라 상대 값과 비교할 방법이 없어 저장도 안 되고 점수에도 못 쓰였다.
         Integer limit                        // 선택. 기본 5, 최대 20
 ) {
     public int limitOrDefault() {

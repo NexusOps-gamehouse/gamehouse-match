@@ -33,18 +33,19 @@ public class HardFilterService {
 
     public Outcome filter(UserSummaryDto me, List<PostSummaryDto> candidates, MatchSearchRequest request) {
         GameMatchingStrategy strategy = strategyFor(request.game());
-        List<String> searchPositions = effectivePositions(me, request);
-        String myTier = effectiveTier(me, request);
+        List<String> searchPositions = effectivePositions(me, request, strategy);
+        String myTier = effectiveTier(me, request, strategy);
 
         // 완화 대상이 아닌 조건들 — 이걸 만족 못 하면 어떤 경우에도 후보가 될 수 없다.
         List<PostSummaryDto> nonNegotiable = candidates.stream()
                 .filter(post -> !me.id().equals(post.authorId()))
                 .filter(post -> post.currentMembers() < post.targetMembers())
                 .filter(post -> "RECRUITING".equals(post.status()))
-                .filter(post -> strategy.positionMatches(searchPositions, post.positions()))
-                .filter(post -> strategy.tierInRange(myTier, post.tierMin(), post.tierMax()))
+                .filter(post -> strategy.positionMatches(searchPositions, post.roles()))
+                .filter(post -> strategy.tierInRange(myTier, post.wantedTier()))
                 .filter(post -> matchesMicPreference(post, request))
                 .filter(post -> matchesTargetMembers(post, request))
+                .filter(post -> matchesPlayStyle(post, request))
                 .toList();
 
         List<PostSummaryDto> strict = nonNegotiable.stream()
@@ -60,20 +61,40 @@ public class HardFilterService {
         return new Outcome(nonNegotiable, nonNegotiable.size() > strict.size());
     }
 
-    private List<String> effectivePositions(UserSummaryDto me, MatchSearchRequest request) {
+    /**
+     * 이번 검색에서 "내가 맡을 자리"로 쓸 포지션 목록.
+     *
+     * 검색 폼에서 고른 값이 있으면 그걸 쓰고, 없으면 프로필의 position 으로
+     * 대체한다. 단 프로필 position 은 게임을 구분하지 않고 한 칸에 저장되므로
+     * (LOL 유저의 "정글"이 발로란트 검색에도 그대로 딸려온다) 이번 검색 게임의
+     * 어휘에 속하는 값일 때만 폴백한다. 예전에는 무조건 폴백해서, 발로란트
+     * 검색에서 역할을 비워두면 "상관없음"이 아니라 "정글로 필터"가 되어 결과가
+     * 0건이었다 — 아무것도 안 고른 사용자가 가장 나쁜 결과를 받았다.
+     */
+    private List<String> effectivePositions(UserSummaryDto me, MatchSearchRequest request,
+                                            GameMatchingStrategy strategy) {
         if (request.positions() != null && !request.positions().isEmpty()) return request.positions();
-        if (me.position() != null && !me.position().isBlank()) return List.of(me.position());
+        if (strategy.knowsPosition(me.position())) return List.of(me.position().trim());
         return List.of(); // 상관없음
     }
 
     /**
+     * 이번 검색에서 "내 티어"로 쓸 값. 반환값은 게임 서열표 어휘로 정규화돼 있다.
+     *
      * request.tier()는 "이번 검색에서는 이 티어로 취급해줘"라는 검색 시점 오버라이드다
      * (예: 프로필 티어가 아직 없거나, 다른 티어대로 한번 둘러보고 싶을 때). 비어있으면
-     * 기존처럼 프로필의 riotTier(검증됨) → tier(자기신고) 순으로 쓴다.
+     * 프로필의 riotTier(검증됨) → tier(자기신고) 순으로 쓴다.
+     *
+     * riotTier 는 라이엇 영문 enum("DIAMOND")이라 그대로 넘기면 서열표에서 못 찾고,
+     * tierInRange 가 "내 티어를 모른다"며 전부 통과시켰다 — 검증된 티어를 가진
+     * 사용자일수록 티어 조건이 안 걸리는 상태였다. 여기서 정규화해서 넘긴다.
      */
-    private String effectiveTier(UserSummaryDto me, MatchSearchRequest request) {
-        if (request.tier() != null && !request.tier().isBlank()) return request.tier();
-        return (me.riotTier() != null && !me.riotTier().isBlank()) ? me.riotTier() : me.tier();
+    private String effectiveTier(UserSummaryDto me, MatchSearchRequest request,
+                                 GameMatchingStrategy strategy) {
+        String raw = (request.tier() != null && !request.tier().isBlank())
+                ? request.tier()
+                : (me.riotTier() != null && !me.riotTier().isBlank()) ? me.riotTier() : me.tier();
+        return strategy.normalizeTier(raw);
     }
 
     /**
@@ -100,6 +121,28 @@ public class HardFilterService {
     private boolean matchesTargetMembers(PostSummaryDto post, MatchSearchRequest request) {
         List<Integer> options = request.targetMembersOptions();
         return options == null || options.isEmpty() || options.contains(post.targetMembers());
+    }
+
+    /**
+     * "이번 판엔 어떤 텐션을 원해요?" — 검색 시점 선호(request.playStyle)와 이 글이
+     * 원하는 텐션(post.playStyle, PostGameRequirement 기반)을 비교하는 Hard Filter다.
+     * request.tier()와 다르게 완화 사다리 대상이 아니다 — 사용자가 /match/new에서
+     * 직접 고른 조건이라 회의록 원칙("필터링에 맞지 않는 조건은 아예 계산하거나
+     * 보여주지 않는다")을 그대로 적용한다.
+     *
+     * - request.playStyle()이 비어있으면(상관없음) 무조건 통과한다.
+     * - post.playStyle()이 비어있으면(글쓴이가 텐션을 안 정함) 통과시킨다 — 글이
+     *   특정 텐션을 요구하지 않았는데 검색자의 선호만으로 걸러내면, 텐션을 안 정한
+     *   글들이 부당하게 다 사라진다. author 개인의 평소 성향(authorPlayStyle)으로
+     *   대신 판단하지 않는 이유는 PostSummaryDto 주석 참고 — "이 글"의 텐션과
+     *   "작성자 개인"의 평소 텐션은 다른 개념이다.
+     * - 둘 다 있으면 정확히 일치해야 한다(대소문자 무시).
+     */
+    private boolean matchesPlayStyle(PostSummaryDto post, MatchSearchRequest request) {
+        String wanted = request.playStyle();
+        if (wanted == null || wanted.isBlank()) return true;
+        if (post.playStyle() == null || post.playStyle().isBlank()) return true;
+        return wanted.equalsIgnoreCase(post.playStyle());
     }
 
     /**

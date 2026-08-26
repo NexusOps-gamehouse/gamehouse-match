@@ -1,7 +1,6 @@
 package gg.duo.match.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import gg.duo.match.dto.PartyMemberDto;
 import gg.duo.match.dto.PostSummaryDto;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -15,9 +14,16 @@ import java.util.List;
  * 이 엔드포인트는 이미 game/gameMode/status 필터와 페이징을 지원하므로,
  * match-service는 별도의 신규 엔드포인트 없이 그대로 재사용한다.
  *
- * tierMin/tierMax/micLevel/members/authorAge/authorPersonality는 Team Fit v2로
- * 필요해진 필드다. post 서비스(PostDto.Summary)가 아직 안 내려주면 null/빈 배열로
- * 채워지고, HardFilterService/TeamFitCalculator는 그만큼 "제한 없음"·"중립"으로 처리한다.
+ * 여기서 만드는 PostSummaryDto는 author/members의 personality가 비어 있는
+ * "반쪽"이다 — 이 응답(공개 API)에는 성향 점수가 없기 때문이다(PostSummaryDto
+ * 주석 참고). authorPersonality·members는 MatchSearchService가 이후 단계에서
+ * PostPartyClient(/internal/posts/party)와 UserClient(/internal/users/personality)
+ * 조회 결과를 합쳐 채운다.
+ *
+ * 필드 이름은 post 응답의 실제 키와 맞춰 그대로 옮긴다(예전엔 post에 없는
+ * positions/tierMin/tierMax/micLevel 키를 찾다가 항상 null이 되는 버그가 있었다) —
+ * post가 실제로 내려주는 건 roles(콤마 구분)·tier(단일 값)·voiceChat(ANY/PREFERRED/
+ * REQUIRED)·playStyle(빡겜/즐겜, PostGameRequirement 기반)이다.
  */
 @Component
 public class PostClient {
@@ -62,36 +68,31 @@ public class PostClient {
                     author.path("riotTier").asText(null),
                     author.path("playStyle").asText(null),
                     JsonParsingUtils.intOrNull(author, "age"),
-                    JsonParsingUtils.parsePersonality(author.path("personality")),
+                    // 방장의 시간대 3종. UserDto 에 이미 실려 오는 값인데 여기서 안 읽고
+                    // 있어서 "플레이 시간대" 축이 방장 쪽을 통째로 모르는 상태가 된다.
+                    author.path("playTimes").asText(null),
+                    author.path("playDays").asText(null),
+                    author.path("playDuration").asText(null),
+                    null, // authorPersonality — MatchSearchService가 나중에 채운다
                     p.path("game").asText(null),
                     p.path("gameMode").asText(null),
                     p.path("playTime").asText(null),
-                    p.path("micRequired").asBoolean(false),
-                    p.path("micLevel").asText(null),
-                    p.path("positions").asText(null),
-                    p.path("tierMin").asText(null),
-                    p.path("tierMax").asText(null),
+                    micRequiredOf(p),
+                    p.path("voiceChat").asText(null), // ANY | PREFERRED | REQUIRED — post의 실제 필드명
+                    p.path("roles").asText(null),      // post의 실제 필드명(과거엔 없는 "positions"를 찾고 있었다)
+                    p.path("tier").asText(null),        // 모집 글이 찾는 티어 한 개(과거엔 없는 tierMin/tierMax를 찾고 있었다)
+                    p.path("playStyle").asText(null),   // 이 글이 원하는 텐션(빡겜/즐겜) — post/PostDto.Summary에 이미 있었는데 여기서 안 읽고 있었다. HardFilterService.matchesPlayStyle 참고
                     p.path("targetMembers").asInt(0),
                     p.path("currentMembers").asLong(0),
                     p.path("status").asText(null),
-                    parseMembers(p.path("members"))
+                    List.of() // members — MatchSearchService가 나중에 채운다
             ));
         }
         return result;
     }
 
-    /** post 서비스가 아직 파티원 배열을 안 내려주면 빈 리스트 — TeamFitCalculator는 작성자 한 명으로 계산한다. */
-    private List<PartyMemberDto> parseMembers(JsonNode membersNode) {
-        List<PartyMemberDto> members = new ArrayList<>();
-        if (membersNode == null || !membersNode.isArray()) return members;
-        for (JsonNode m : membersNode) {
-            members.add(new PartyMemberDto(
-                    m.path("id").asLong(),
-                    m.path("nickname").asText(null),
-                    JsonParsingUtils.intOrNull(m, "age"),
-                    JsonParsingUtils.parsePersonality(m.path("personality"))
-            ));
-        }
-        return members;
+    /** voiceChat이 REQUIRED일 때만 마이크 필수. 예전 micRequired(boolean) 대체값으로도 쓴다. */
+    private boolean micRequiredOf(JsonNode post) {
+        return "REQUIRED".equalsIgnoreCase(post.path("voiceChat").asText(""));
     }
 }

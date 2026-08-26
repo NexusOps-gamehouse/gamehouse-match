@@ -1,21 +1,24 @@
 package gg.duo.match.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import gg.duo.match.dto.PersonalityProfile;
 import gg.duo.match.dto.UserSummaryDto;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
- * user 서비스의 GET /api/users/{id} 를 호출한다.
- *
- * 이 엔드포인트는 로그인 필요라서, match-service가 대신 호출할 때도 원래 요청의
- * Authorization 헤더를 그대로 실어 보낸다(토큰 릴레이).
- *
- * age/playDays/playDuration/personality는 /signup/survey 개편으로 예정된 필드다.
- * common.dto.UserDto(user 서비스가 실제로 내려주는 형태)에는 아직 없어서 전부 null로
- * 채워지고, TeamFitCalculator는 그걸 중립값으로 취급한다 — user 서비스가 이 필드들을
- * 채워 내려주기 시작해도, 아직이어도 서로 깨지지 않는다.
+ * user 서비스 조회. 두 갈래로 나뉜다.
+ *   - GET /api/users/{id} (공개, 로그인 필요) : "나(me)"의 기본 프로필. 원래 요청의
+ *     Authorization 헤더를 그대로 실어 보낸다(토큰 릴레이).
+ *   - GET /internal/users, /internal/users/personality (내부 전용, 인증 불필요) :
+ *     작성자·파티원의 기본 정보/성향 점수를 묶어서 가져온다. 성향 점수는
+ *     "남의 프로필 조회"로 노출하면 안 되는 값이라 공개 엔드포인트에는 없다
+ *     (common.dto.UserDto 주석 참고) — 그래서 personality만 별도 내부 API로 받는다.
  */
 @Component
 public class UserClient {
@@ -51,7 +54,46 @@ public class UserClient {
                 JsonParsingUtils.intOrNull(body, "age"),
                 body.path("playDays").asText(null),
                 body.path("playDuration").asText(null),
-                JsonParsingUtils.parsePersonality(body.path("personality"))
+                null // personality — MatchSearchService가 fetchPersonalities() 결과로 채운다
         );
+    }
+
+    /** id 묶음 → 닉네임/나이 등 기본 정보. 파티원(members) 표시용 — 성향은 안 담는다. */
+    public Map<Long, JsonNode> fetchUsersByIds(List<Long> ids) {
+        Map<Long, JsonNode> result = new HashMap<>();
+        if (ids == null || ids.isEmpty()) return result;
+
+        JsonNode body = userServiceWebClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/internal/users")
+                        .queryParam("ids", ids)
+                        .build())
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .block();
+
+        if (body == null || !body.isArray()) return result;
+        for (JsonNode u : body) result.put(u.path("id").asLong(), u);
+        return result;
+    }
+
+    /** id 묶음 → 성향 점수. 설문에 응답한 적 없는 사용자는 결과 Map에서 빠진다(호출부가 null로 취급). */
+    public Map<Long, PersonalityProfile> fetchPersonalities(List<Long> ids) {
+        Map<Long, PersonalityProfile> result = new HashMap<>();
+        if (ids == null || ids.isEmpty()) return result;
+
+        JsonNode body = userServiceWebClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/internal/users/personality")
+                        .queryParam("ids", ids)
+                        .build())
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .block();
+
+        if (body == null || !body.isArray()) return result;
+        for (JsonNode entry : body) {
+            PersonalityProfile p = JsonParsingUtils.parsePersonality(entry.path("personality"));
+            if (p != null) result.put(entry.path("userId").asLong(), p);
+        }
+        return result;
     }
 }
